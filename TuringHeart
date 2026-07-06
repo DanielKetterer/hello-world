@@ -30,19 +30,19 @@ SIZE = 64
 VISUAL_SPACING = 1
 VISUAL_SIZE = SIZE
 HEART_SAMPLES = 900
-
+scale = 2
 # Pacing.  The film is a seamless loop of timed phases (seconds):
 #   emerge from the red seed -> a few deliberately slow first steps ->
 #   trace the rest of the outline -> fill the heart -> hold -> dive back to red.
 # Everything here is tunable; passing --seconds rescales the phases together.
-EMERGE_SECONDS = 1.0          # pull out of the red seed to reveal the machine
-STEP_HOLD_SECONDS = 1       # each of the opening steps takes about this long
+EMERGE_SECONDS = 1*scale         # pull out of the red seed to reveal the machine
+STEP_HOLD_SECONDS = .5*scale        # each of the opening steps takes about this long
 STEP_HOLD_COUNT = 2          # how many opening steps are deliberately slow
-OUTLINE_SECONDS = 5         # tracing the remainder of the outline
-FILL_SECONDS = 5            # filling the interior
-HOLD_SECONDS = 3.0            # resting on the completed heart
-COLLAPSE_SECONDS = 3       # diving into a central red cell, back to red
-CAPTION_FADE_SECONDS = 2    # how slowly captions crossfade (larger = slower)
+OUTLINE_SECONDS = 3*scale          # tracing the remainder of the outline
+FILL_SECONDS = 3*scale            # filling the interior
+HOLD_SECONDS = .75*scale            # resting on the completed heart
+COLLAPSE_SECONDS = 2*scale        # diving into a central red cell, back to red
+CAPTION_FADE_SECONDS = 2*scale     # how slowly captions crossfade (larger = slower)
 DEFAULT_SECONDS = (
     EMERGE_SECONDS + STEP_HOLD_SECONDS * STEP_HOLD_COUNT + OUTLINE_SECONDS
     + FILL_SECONDS + HOLD_SECONDS + COLLAPSE_SECONDS
@@ -489,12 +489,12 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
         for artist, base in head_parts:
             artist.set_alpha(base * a)
 
-    title = fig.text(0.5, 0.94, "Eyes of the beholder", color=WHITE, fontsize=28, fontweight="light", ha="center", family="DejaVu Sans")
+    title = fig.text(0.5, 0.94, "eyes of the beholder", color=WHITE, fontsize=28, fontweight="light", ha="center", family="DejaVu Sans")
     caption1 = fig.text(
-        0.5, 0.5, "", color=SILVER, fontsize=26, ha="center", va="center", family="DejaVu Sans"
+        0.5, 0.45, "", color=SILVER, fontsize=26, ha="center", va="center", family="DejaVu Sans"
     )
     caption2 = fig.text(
-        0.5, 0.5, "", color=GOLD, fontsize=23, ha="center", va="center", family="DejaVu Sans"
+        0.5, 0.05, "", color=GOLD, fontsize=23, ha="center", va="center", family="DejaVu Sans"
     )
 
     # A full-figure red layer.  It is opaque only at the very first and very
@@ -570,8 +570,8 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
             breathe = 0.90 + 0.05 * math.sin(2.0 * math.pi * t / 2.6)
             glow_mult, core_mult = breathe, breathe
         else:
-            beat = heartbeat(t - t_fill_end, period=1.0)
-            glow_mult = 0.90 + 0.28 * beat
+            beat = heartbeat(t - t_fill_end, period=2.0)
+            glow_mult = 0.90 + 0.45 * beat
             core_mult = 0.88 + 0.24 * beat
 
         glow_rgba[:, :, 3] = 0.0
@@ -614,8 +614,8 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
             1.0 - ramp(t, bridge_start, t_out_end),
         )
         caption2_alpha = min(
-            ramp(t, bridge_start, t_out_end),
-            1.0 - ramp(t, t_hold_end, t_hold_end + collapse_t * 0.5),
+            ramp(t, bridge_start+3.5, t_out_end+3.5),
+            1.0 - ramp(t, t_hold_end+3.5, t_hold_end+3.5+ collapse_t * 0.5),
         )
         caption1.set_text("Love is found in the simple act of being.")
         caption2.set_text("Beauty, in simplicity becoming.")
@@ -645,8 +645,8 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render 'A Turing Machine', a heart-tracing animation.")
-    parser.add_argument("--output", type=Path, default=Path("a_turing_machine.gif"), help="Output .mp4 or .gif path")
-    parser.add_argument("--fps", type=int, default=30, help="Frames per second")
+    parser.add_argument("--output", type=Path, default=Path("a_turing_machine2.mp4"), help="Output .mp4 or .gif path")
+    parser.add_argument("--fps", type=int, default=20, help="Frames per second")
     parser.add_argument("--seconds", type=float, default=DEFAULT_SECONDS, help="Animation duration")
     parser.add_argument("--self-test", action="store_true", help="Validate the heart traversal and exit")
     args = parser.parse_args()
