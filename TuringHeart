@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import math
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Iterable, Literal, Sequence
 
@@ -65,6 +67,7 @@ MUTED = "#8fa0b8"
 AMBER = "#ffd166"
 GOLD   = "#D3AE36"
 SILVER = "#C1C1C1"
+AUDIO = Path(__file__).resolve().with_name("25secaudio.mp3")
 
 def connect_points(start: Point, end: Point) -> list[Point]:
     """Return a deterministic Manhattan path from start to end, excluding start."""
@@ -638,7 +641,38 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
     suffix = output.suffix.lower()
     if suffix == ".gif":
         anim.save(output, writer=animation.PillowWriter(fps=fps))
+    elif AUDIO.exists():
+        with tempfile.NamedTemporaryFile(suffix=".mp4", dir=output.parent, delete=False) as temporary_video:
+            silent_output = Path(temporary_video.name)
+        try:
+            anim.save(silent_output, writer=animation.FFMpegWriter(fps=fps, bitrate=2600))
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(silent_output),
+                "-i",
+                str(AUDIO),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                "-movflags",
+                "+faststart",
+                str(output),
+            ]
+            subprocess.run(cmd, check=True)
+        finally:
+            silent_output.unlink(missing_ok=True)
     else:
+        print(f"Audio file not found at {AUDIO}; rendering silent video", flush=True)
         anim.save(output, writer=animation.FFMpegWriter(fps=fps, bitrate=2600))
     plt.close(fig)
 
