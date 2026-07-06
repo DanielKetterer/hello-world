@@ -641,6 +641,36 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
     if suffix == ".gif":
         anim = animation.FuncAnimation(fig, update, frames=total_frames, interval=1000 / fps, blit=False)
         anim.save(output, writer=animation.PillowWriter(fps=fps))
+    elif AUDIO.exists():
+        with tempfile.NamedTemporaryFile(suffix=".mp4", dir=output.parent, delete=False) as temporary_video:
+            silent_output = Path(temporary_video.name)
+        try:
+            anim.save(silent_output, writer=animation.FFMpegWriter(fps=fps, bitrate=2600))
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(silent_output),
+                "-i",
+                str(AUDIO),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                "-movflags",
+                "+faststart",
+                str(output),
+            ]
+            subprocess.run(cmd, check=True)
+        finally:
+            silent_output.unlink(missing_ok=True)
     else:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg is None:
