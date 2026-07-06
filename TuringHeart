@@ -154,34 +154,20 @@ def shortest_path(start: Point, target: Point, allowed: set[Point]) -> list[Poin
     raise ValueError(f"No in-heart path from {start} to {target}")
 
 
-def inward_fill_path(start: Point, interior: set[Point], outline: Sequence[Point]) -> list[Point]:
-    """Visit every interior cell by peeling clockwise boundary layers inward."""
+def row_by_row_fill_path(start: Point, interior: set[Point], outline: Sequence[Point]) -> list[Point]:
+    """Visit interior cells in horizontal rows after the outline is traced."""
 
     outline_cells = set(outline)
     allowed = set(interior) | outline_cells
-    boundary = [cell for cell in interior if any(neighbor not in interior for neighbor in grid_neighbors(cell))]
-    layer_by_cell: dict[Point, int] = {cell: 0 for cell in boundary}
-    frontier = list(boundary)
-    for cell in frontier:
-        for neighbor in grid_neighbors(cell):
-            if neighbor in interior and neighbor not in layer_by_cell:
-                layer_by_cell[neighbor] = layer_by_cell[cell] + 1
-                frontier.append(neighbor)
+    fill_cells = interior - outline_cells
+    ordered_targets: list[Point] = []
 
-    min_x = min(x for x, _ in interior)
-    max_x = max(x for x, _ in interior)
-    min_y = min(y for _, y in interior)
-    max_y = max(y for _, y in interior)
-    center = ((min_x + max_x) / 2, (min_y + max_y) / 2)
+    for row_index, y in enumerate(range(min(y for _, y in fill_cells), max(y for _, y in fill_cells) + 1)):
+        row = sorted((cell for cell in fill_cells if cell[1] == y), key=lambda cell: cell[0])
+        if row_index % 2 == 1:
+            row.reverse()
+        ordered_targets.extend(row)
 
-    def sort_key(cell: Point) -> tuple[int, float, float]:
-        x, y = cell
-        # Negative angle makes each boundary layer proceed clockwise.
-        angle = -math.atan2(y - center[1], x - center[0])
-        distance = (x - center[0]) ** 2 + (y - center[1]) ** 2
-        return (layer_by_cell[cell], angle, distance)
-
-    ordered_targets = sorted(interior - outline_cells, key=sort_key)
     path: list[Point] = []
     current = start
     for target in ordered_targets:
@@ -202,17 +188,34 @@ def connected_loop(points: Sequence[Point]) -> list[Point]:
     return loop
 
 
+def start_loop_at_bottom(loop: Sequence[Point]) -> list[Point]:
+    """Rotate a closed loop so its traversal begins at the heart tip."""
+
+    if not loop:
+        return []
+
+    cells = list(loop)
+    if len(cells) > 1 and cells[0] == cells[-1]:
+        cells = cells[:-1]
+
+    center_x = (min(x for x, _ in cells) + max(x for x, _ in cells)) / 2
+    start_index = min(range(len(cells)), key=lambda index: (cells[index][1], abs(cells[index][0] - center_x)))
+    rotated = cells[start_index:] + cells[:start_index]
+    rotated.append(rotated[0])
+    return rotated
+
+
 def heart_paths(size: int = SIZE, samples: int = HEART_SAMPLES) -> tuple[list[Point], list[Point]]:
-    """Return the outer heart trace and clockwise inner fill contours."""
+    """Return the bottom-starting outer heart trace and row-by-row fill."""
 
     if size < 16:
         raise ValueError("Heart grid size must be at least 16")
     if samples < 32:
         raise ValueError("Heart curve needs at least 32 samples")
 
-    outline = connected_loop(quantized_heart_loop(size, samples, scale_factor=1.0, clockwise=False))
+    outline = start_loop_at_bottom(connected_loop(quantized_heart_loop(size, samples, scale_factor=1.0, clockwise=False)))
     interior = heart_interior_cells(size=size, samples=samples)
-    fill = inward_fill_path(outline[-1], interior, outline)
+    fill = row_by_row_fill_path(outline[-1], interior, outline)
 
     return outline, fill
 
@@ -220,10 +223,9 @@ def heart_paths(size: int = SIZE, samples: int = HEART_SAMPLES) -> tuple[list[Po
 def heart_curve(size: int = SIZE, samples: int = HEART_SAMPLES) -> list[Point]:
     """Return a continuous traversal of an outlined, then filled, heart.
 
-    The outer contour is traced first from the classic parametric heart curve.
-    Once the outline is complete, the path follows successively smaller inner
-    contours clockwise, so the glowing tape fills the heart from its inner edge
-    toward the center.
+    The outer contour is traced first from the bottom tip of the classic
+    parametric heart curve. Once the outline is complete, the path fills the
+    heart one horizontal row at a time from bottom to top.
     """
 
     outline, fill = heart_paths(size=size, samples=samples)
