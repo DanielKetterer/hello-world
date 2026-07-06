@@ -423,10 +423,12 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
         local_rule.set_text(visible_rule(step, move))
         state_box.set_text(f"{qi} → {qj}   write {write}")
 
-        zoom = easing(progress)
-        half = interpolate(3.2, VISUAL_SIZE * 0.58, zoom)
-        cx = interpolate(hx, (VISUAL_SIZE - 1) / 2, max(0.0, (progress - 0.28) / 0.72))
-        cy = interpolate(hy, (VISUAL_SIZE - 1) / 2, max(0.0, (progress - 0.28) / 0.72))
+        view_transition = easing(max(0.0, min(1.0, (progress - 0.16) / 0.58)))
+        view_center_x = (VISUAL_SIZE - 1) / 2
+        view_center_y = (VISUAL_SIZE - 1) / 2
+        half = interpolate(3.2, VISUAL_SIZE * 0.82, view_transition)
+        cx = interpolate(hx, view_center_x, view_transition)
+        cy = interpolate(hy, view_center_y, view_transition)
         ax.set_xlim(cx - half, cx + half)
         ax.set_ylim(cy - half * 9 / 16, cy + half * 9 / 16)
 
