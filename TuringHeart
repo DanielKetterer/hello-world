@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import argparse
 import math
+import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Iterable, Literal, Sequence
 
@@ -636,10 +636,10 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
                 lamp_a, lamp_b,
                 caption1, caption2, red_seam)
 
-    anim = animation.FuncAnimation(fig, update, frames=total_frames, interval=1000 / fps, blit=False)
     output.parent.mkdir(parents=True, exist_ok=True)
     suffix = output.suffix.lower()
     if suffix == ".gif":
+        anim = animation.FuncAnimation(fig, update, frames=total_frames, interval=1000 / fps, blit=False)
         anim.save(output, writer=animation.PillowWriter(fps=fps))
     elif AUDIO.exists():
         with tempfile.NamedTemporaryFile(suffix=".mp4", dir=output.parent, delete=False) as temporary_video:
@@ -672,8 +672,62 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
         finally:
             silent_output.unlink(missing_ok=True)
     else:
-        print(f"Audio file not found at {AUDIO}; rendering silent video", flush=True)
-        anim.save(output, writer=animation.FFMpegWriter(fps=fps, bitrate=2600))
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise FileNotFoundError(
+                "ffmpeg was not found on PATH. Install ffmpeg or add its bin directory to PATH "
+                "before rendering MP4 output with audio."
+            )
+
+        width, height = fig.canvas.get_width_height()
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            f"{width}x{height}",
+            "-r",
+            str(fps),
+            "-i",
+            "-",
+        ]
+        if AUDIO.exists():
+            cmd.extend(["-i", str(AUDIO), "-map", "0:v:0", "-map", "1:a:0"])
+        else:
+            print(f"Audio file not found at {AUDIO}; rendering silent video", flush=True)
+            cmd.extend(["-map", "0:v:0"])
+        cmd.extend([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "17",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        if AUDIO.exists():
+            cmd.extend(["-c:a", "aac", "-b:a", "192k", "-shortest"])
+        cmd.extend(["-movflags", "+faststart", str(output)])
+
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        assert proc.stdin is not None
+        try:
+            for frame in range(total_frames):
+                update(frame)
+                fig.canvas.draw()
+                rgba = np.asarray(fig.canvas.buffer_rgba())
+                proc.stdin.write(rgba[:, :, :3].tobytes())
+        finally:
+            proc.stdin.close()
+            returncode = proc.wait()
+            plt.close(fig)
+        if returncode != 0:
+            raise subprocess.CalledProcessError(returncode, cmd)
+        return
     plt.close(fig)
 
 
