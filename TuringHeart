@@ -11,7 +11,9 @@ Usage:
     python turing_hilbert_animation.py --output a_turing_machine.mp4
     python turing_hilbert_animation.py --output a_turing_machine.gif
 
-By default the complete traversal renders as five equal four-second stages.
+By default the film is a seamless loop: it emerges from a single red seed
+cell, traces the outline, fills the heart, holds on it, then dives back into
+one central red cell -- the finished heart becoming the seed of the next run.
 """
 
 from __future__ import annotations
@@ -28,9 +30,32 @@ SIZE = 64
 VISUAL_SPACING = 1
 VISUAL_SIZE = SIZE
 HEART_SAMPLES = 900
-STAGE_SECONDS = 4.0
-STAGE_COUNT = 5
-DEFAULT_SECONDS = STAGE_SECONDS * STAGE_COUNT
+
+# Pacing.  The film is a seamless loop of timed phases (seconds):
+#   emerge from the red seed -> a few deliberately slow first steps ->
+#   trace the rest of the outline -> fill the heart -> hold -> dive back to red.
+# Everything here is tunable; passing --seconds rescales the phases together.
+EMERGE_SECONDS = 1.0          # pull out of the red seed to reveal the machine
+STEP_HOLD_SECONDS = 1       # each of the opening steps takes about this long
+STEP_HOLD_COUNT = 2          # how many opening steps are deliberately slow
+OUTLINE_SECONDS = 5         # tracing the remainder of the outline
+FILL_SECONDS = 5            # filling the interior
+HOLD_SECONDS = 3.0            # resting on the completed heart
+COLLAPSE_SECONDS = 3       # diving into a central red cell, back to red
+CAPTION1_FADE_SECONDS = 2   # how slowly the first caption fades (larger = slower)
+DEFAULT_SECONDS = (
+    EMERGE_SECONDS + STEP_HOLD_SECONDS * STEP_HOLD_COUNT + OUTLINE_SECONDS
+    + FILL_SECONDS + HOLD_SECONDS + COLLAPSE_SECONDS
+)
+
+# Camera framing.  The single figure is centered in a 16:9 frame; its box aspect
+# governs the data window so the heart fills the frame without letterbox or
+# cropping.
+AX_RECT = (0.14, 0.06, 0.72, 0.88)
+BOX_ASPECT = (AX_RECT[2] * 16.0) / (AX_RECT[3] * 9.0)
+SEED_HALF_Y = 0.55            # inside a single cell: a uniform red field
+START_HALF_Y = 3.7            # zoomed in on the head at the start
+FINAL_HALF_Y = 27.0          # frames the whole heart, centered, with margin
 
 DARK = "#05070d"
 GRID = "#d8dde8"
@@ -38,7 +63,8 @@ RED = "#ff0033"
 WHITE = "#f4f7ff"
 MUTED = "#8fa0b8"
 AMBER = "#ffd166"
-
+GOLD   = "#D3AE36"
+SILVER = "#C1C1C1"
 
 def connect_points(start: Point, end: Point) -> list[Point]:
     """Return a deterministic Manhattan path from start to end, excluding start."""
@@ -279,6 +305,38 @@ def easing(t: float) -> float:
     return t * t * (3.0 - 2.0 * t)
 
 
+def smootherstep(t: float) -> float:
+    """Ken Perlin's smootherstep: zero first and second derivatives at both ends."""
+
+    t = max(0.0, min(1.0, t))
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+
+def outline_ease(t: float) -> float:
+    """Mostly-linear trace with softened ends so the draw neither crawls nor snaps."""
+
+    t = max(0.0, min(1.0, t))
+    return 0.55 * t + 0.45 * smootherstep(t)
+
+
+def fill_ease(t: float) -> float:
+    """Gentle ease-out so the final rows settle instead of slamming shut."""
+
+    t = max(0.0, min(1.0, t))
+    return 1.0 - (1.0 - t) ** 1.5
+
+
+def heartbeat(t: float, period: float = 1.0) -> float:
+    """A double-thump (lub-dub) brightness envelope in [0, ~1] for the final hold."""
+
+    phase = (t % period) / period
+
+    def bump(center: float, width: float) -> float:
+        return math.exp(-(((phase - center) / width) ** 2))
+
+    return min(1.0, bump(0.12, 0.045) + 0.62 * bump(0.32, 0.052))
+
+
 def interpolate(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
@@ -313,17 +371,39 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
     import matplotlib.animation as animation
     import matplotlib.pyplot as plt
     import numpy as np
-    from matplotlib.patches import Circle, Rectangle
+    from matplotlib.patches import Arc, Circle, FancyBboxPatch, Polygon, Rectangle
 
     outline, _fill = heart_paths()
     points = heart_curve()
     validate_curve(points)
     validate_heart_fill(points)
     outline_end = min(len(outline) - 1, len(points) - 1)
+    last_index = len(points) - 1
 
-    total_frames = int(fps * seconds)
+    total_frames = max(2, int(round(fps * seconds)))
+    # Six timed phases (see module constants); --seconds rescales them together.
+    scale = seconds / DEFAULT_SECONDS if DEFAULT_SECONDS > 0 else 1.0
+    emerge_t = EMERGE_SECONDS * scale
+    step_hold = STEP_HOLD_SECONDS * scale
+    deliberate_t = step_hold * STEP_HOLD_COUNT
+    outline_trace_t = OUTLINE_SECONDS * scale
+    fill_t = FILL_SECONDS * scale
+    hold_t = HOLD_SECONDS * scale
+    collapse_t = COLLAPSE_SECONDS * scale
+    caption1_fade = CAPTION1_FADE_SECONDS * scale
+    outline_t = deliberate_t + outline_trace_t
+
+    t_emerge_end = emerge_t
+    t_deliberate_end = t_emerge_end + deliberate_t
+    t_out_end = t_deliberate_end + outline_trace_t
+    t_fill_end = t_out_end + fill_t
+    t_hold_end = t_fill_end + hold_t
+    t_collapse_end = t_hold_end + collapse_t
+
+    center = (VISUAL_SIZE - 1) / 2.0
     point_x = np.array([x * VISUAL_SPACING for x, _ in points], dtype=int)
     point_y = np.array([y * VISUAL_SPACING for _, y in points], dtype=int)
+    seed_x, seed_y = float(point_x[0]), float(point_y[0])
     glow_rgba = np.zeros((VISUAL_SIZE, VISUAL_SIZE, 4), dtype=float)
     cell_rgba = np.zeros((VISUAL_SIZE, VISUAL_SIZE, 4), dtype=float)
     red_rgb = tuple(int(RED[i : i + 2], 16) / 255 for i in (1, 3, 5))
@@ -331,9 +411,7 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
     cell_rgba[:, :, :3] = red_rgb
 
     fig = plt.figure(figsize=(16, 9), facecolor=DARK)
-    ax = fig.add_axes([0.04, 0.06, 0.72, 0.88], facecolor=DARK)
-    panel = fig.add_axes([0.77, 0.09, 0.20, 0.82], facecolor="none")
-    panel.axis("off")
+    ax = fig.add_axes(list(AX_RECT), facecolor=DARK)
 
     ax.set_aspect("equal")
     grid_lines = [i - 0.5 for i in range(VISUAL_SIZE + 1)]
@@ -359,44 +437,118 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
         zorder=2,
     )
 
-    start = (point_x[0], point_y[0])
-    head = Circle(start, radius=0.24, facecolor=WHITE, edgecolor=RED, linewidth=1.6, zorder=8)
-    read_beam = Rectangle((start[0] - 0.20, start[1] - 0.55), 0.40, 0.20, facecolor=RED, alpha=0.88, zorder=7)
-    body = Rectangle((start[0] - 0.38, start[1] + 0.22), 0.76, 0.44, facecolor="#101722", edgecolor=WHITE, linewidth=0.9, zorder=7)
-    ax.add_patch(read_beam)
-    ax.add_patch(body)
-    ax.add_patch(head)
+    # --- Read/write head -------------------------------------------------
+    # A small carriage that rides above the current cell: a rounded housing
+    # carrying the machine state, a neck, and a glowing nib pointing down into
+    # the cell it is writing.  It reads as a machine leaving red behind it.
+    HOUSE_DY, HOUSE_W, HOUSE_H = 1.20, 1.9, 1.0
+    hx0, hy0 = float(point_x[0]), float(point_y[0])
 
-    title = fig.text(0.06, 0.94, "... and Minds", color=WHITE, fontsize=28, fontweight="light", family="DejaVu Sans")
-    local_rule = panel.text(0.0, 0.86, "", color=WHITE, fontsize=15, family="DejaVu Sans")
-    state_box = panel.text(0.0, 0.76, "", color=RED, fontsize=22, family="DejaVu Sans Mono")
-    note = panel.text(0.0, 0.62, "read  →  write  →  move\nlocal rule, local cell", color=MUTED, fontsize=12, linespacing=1.7)
-    caption1 = fig.text(0.50, 0.14, "", color=WHITE, fontsize=26, ha="center", family="DejaVu Sans")
-    caption2 = fig.text(0.50, 0.09, "", color=WHITE, fontsize=26, ha="center", family="DejaVu Sans")
-    table_title = panel.text(0.0, 0.45, "", color=AMBER, fontsize=12, family="DejaVu Sans")
-    table = panel.text(0.0, 0.37, "", color=WHITE, fontsize=10.5, linespacing=1.65, family="DejaVu Sans")
+    halo = Circle((hx0, hy0 + HOUSE_DY - 0.05), radius=1.7, facecolor=RED, edgecolor="none", alpha=0.16, zorder=5)
+    nib_glow = Polygon(
+        [[hx0, hy0 - 0.2], [hx0 - 0.62, hy0 + 0.5], [hx0 + 0.62, hy0 + 0.5]],
+        closed=True, facecolor=RED, edgecolor="none", alpha=0.32, zorder=6,
+    )
+    neck = Rectangle((hx0 - 0.1, hy0 + 0.34), 0.2, 0.40, facecolor="#0e1626", edgecolor="#e8ecf6", linewidth=0.8, zorder=7)
+    housing = FancyBboxPatch(
+        (hx0 - HOUSE_W / 2, hy0 + HOUSE_DY - HOUSE_H / 2), HOUSE_W, HOUSE_H,
+        boxstyle="round,pad=0,rounding_size=0.26",
+        facecolor="#0e1626", edgecolor="#e8ecf6", linewidth=1.15, zorder=8,
+    )
+    nib = Polygon(
+        [[hx0, hy0], [hx0 - 0.34, hy0 + 0.38], [hx0 + 0.34, hy0 + 0.38]],
+        closed=True, facecolor=RED, edgecolor="#ff8ba3", linewidth=0.9, zorder=9,
+    )
+    lamp_a = Circle((hx0 - 0.58, hy0 + HOUSE_DY + 0.26), radius=0.11, facecolor=AMBER, edgecolor="none", zorder=10)
+    lamp_b = Circle((hx0 + 0.58, hy0 + HOUSE_DY + 0.26), radius=0.11, facecolor=WHITE, edgecolor="none", zorder=10)
+    for patch in (halo, nib_glow, neck, housing, nib, lamp_a, lamp_b):
+        ax.add_patch(patch)
+    smile = Arc(
+        (hx0, hy0 + HOUSE_DY - 0.06), 0.55, 0.28, angle=0.0, theta1=215, theta2=325,
+        edgecolor="#dfe6f2", linewidth=1.25, zorder=11,
+    )
+    ax.add_patch(smile)
 
-    def stage_position(progress: float) -> tuple[int, float]:
-        stage_float = min(progress * STAGE_COUNT, STAGE_COUNT - 1e-9)
-        stage = int(stage_float)
-        return stage, stage_float - stage
+    head_parts = [
+        (halo, 0.16), (nib_glow, 0.32), (neck, 1.0), (housing, 1.0),
+        (nib, 1.0), (lamp_a, 1.0), (lamp_b, 1.0), (smile, 0.9),
+    ]
+
+    def place_head(hx: float, hy: float) -> None:
+        halo.center = (hx, hy + HOUSE_DY - 0.05)
+        nib_glow.set_xy([[hx, hy - 0.2], [hx - 0.62, hy + 0.5], [hx + 0.62, hy + 0.5], [hx, hy - 0.2]])
+        neck.set_xy((hx - 0.1, hy + 0.34))
+        housing.set_bounds(hx - HOUSE_W / 2, hy + HOUSE_DY - HOUSE_H / 2, HOUSE_W, HOUSE_H)
+        nib.set_xy([[hx, hy], [hx - 0.34, hy + 0.38], [hx + 0.34, hy + 0.38], [hx, hy]])
+        lamp_a.center = (hx - 0.58, hy + HOUSE_DY + 0.26)
+        lamp_b.center = (hx + 0.58, hy + HOUSE_DY + 0.26)
+        smile.set_center((hx, hy + HOUSE_DY - 0.06))
+
+    def fade_head(alpha: float) -> None:
+        a = max(0.0, min(1.0, alpha))
+        for artist, base in head_parts:
+            artist.set_alpha(base * a)
+
+    title = fig.text(0.5, 0.94, "Eyes of the beholder", color=WHITE, fontsize=28, fontweight="light", ha="center", family="DejaVu Sans")
+    caption1 = fig.text(0.5, 0.135, "", color=SILVER, fontsize=26, ha="center", family="DejaVu Sans")
+    caption2 = fig.text(0.5, 0.085, "", color=GOLD, fontsize=23, ha="center", family="DejaVu Sans")
+
+    # A full-figure red layer.  It is opaque only at the very first and very
+    # last frames, so the film begins and ends on the same uniform red field --
+    # the seam of the loop, where the heart's centre and the next seed are one.
+    red_seam = Rectangle((0, 0), 1, 1, transform=fig.transFigure,
+                         facecolor=RED, edgecolor="none", zorder=60, alpha=0.0)
+    fig.add_artist(red_seam)
 
     def frame_to_step(frame: int) -> float:
-        progress = frame / max(1, total_frames - 1)
-        stage, stage_t = stage_position(progress)
-        local_t = stage_t ** 1.35
-        if stage < STAGE_COUNT - 1:
-            outline_stops = (0.0, 0.08, 0.25, 0.55, 1.0)
-            outline_progress = interpolate(outline_stops[stage], outline_stops[stage + 1], local_t)
-            return outline_progress * outline_end
+        t = frame / fps
+        if t <= t_emerge_end:                     # resting at the seed
+            return 0.0
+        if t <= t_deliberate_end:                 # first steps, one slow cell at a time
+            u = (t - t_emerge_end) / deliberate_t if deliberate_t > 0 else 1.0
+            return u * STEP_HOLD_COUNT
+        if t <= t_out_end:                        # trace the rest of the outline
+            u = outline_ease((t - t_deliberate_end) / outline_trace_t if outline_trace_t > 0 else 1.0)
+            return STEP_HOLD_COUNT + u * (outline_end - STEP_HOLD_COUNT)
+        if t <= t_fill_end:                       # fill the interior
+            u = fill_ease((t - t_out_end) / fill_t if fill_t > 0 else 1.0)
+            return outline_end + u * (last_index - outline_end)
+        return float(last_index)                  # hold + collapse
 
-        fill_progress = local_t
-        return interpolate(outline_end, len(points) - 1, fill_progress)
+    def camera(frame: int, hx: float, hy: float) -> tuple[float, float, float, float]:
+        """Emerge from the seed, linger on the slow first steps, pull back, lock, dive."""
+
+        t = frame / fps
+        if t <= t_emerge_end:                     # zoom out of the red seed cell
+            z = smootherstep(t / emerge_t if emerge_t > 0 else 1.0)
+            half_y = interpolate(SEED_HALF_Y, START_HALF_Y, z)
+            cx, cy = seed_x, seed_y
+        elif t <= t_deliberate_end:               # linger close on the slow first steps
+            half_y = START_HALF_Y
+            cx, cy = hx, hy
+        elif t <= t_out_end:                      # pull back to frame the whole heart
+            z = smootherstep((t - t_deliberate_end) / outline_trace_t if outline_trace_t > 0 else 1.0)
+            half_y = interpolate(START_HALF_Y, FINAL_HALF_Y, z)
+            cx = interpolate(hx, center, z)
+            cy = interpolate(hy, center, z)
+        elif t <= t_hold_end:                     # locked, centered, static
+            half_y = FINAL_HALF_Y
+            cx = cy = center
+        else:                                     # dive into one central red cell
+            z = smootherstep((t - t_hold_end) / collapse_t if collapse_t > 0 else 1.0)
+            half_y = interpolate(FINAL_HALF_Y, SEED_HALF_Y, z)
+            cx = cy = center
+        return cx, cy, half_y * BOX_ASPECT, half_y
+
+    def ramp(t: float, a: float, b: float) -> float:
+        if b <= a:
+            return 1.0 if t >= b else 0.0
+        return max(0.0, min(1.0, (t - a) / (b - a)))
 
     def update(frame: int) -> Iterable[object]:
-        progress = frame / max(1, total_frames - 1)
+        t = frame / fps
         step_float = frame_to_step(frame)
-        step = min(int(step_float), len(points) - 2)
+        step = min(int(step_float), last_index - 1)
         frac = step_float - step
         p = points[step]
         q = points[step + 1]
@@ -404,58 +556,70 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
         hy = interpolate(point_y[step], point_y[step + 1], frac)
         move = move_between(p, q)
 
-        fill_step = min(int(step_float), len(points) - 1)
+        fill_step = min(int(step_float), last_index)
         visited_x = point_x[: fill_step + 1]
         visited_y = point_y[: fill_step + 1]
+
+        # Brightness: a barely-there breath while building, then a real cardiac
+        # lub-dub once the heart is whole and the frame goes still.
+        if t < t_fill_end:
+            breathe = 0.90 + 0.05 * math.sin(2.0 * math.pi * t / 2.6)
+            glow_mult, core_mult = breathe, breathe
+        else:
+            beat = heartbeat(t - t_fill_end, period=1.0)
+            glow_mult = 0.90 + 0.28 * beat
+            core_mult = 0.88 + 0.24 * beat
+
         glow_rgba[:, :, 3] = 0.0
         cell_rgba[:, :, 3] = 0.0
-        pulse = 0.88 + 0.12 * math.sin(2.0 * math.pi * frame / max(1, fps * 4))
-        glow_rgba[visited_y, visited_x, 3] = 0.90 * pulse
-        cell_rgba[visited_y, visited_x, 3] = 0.52 * pulse
+        glow_rgba[visited_y, visited_x, 3] = min(1.0, 0.90 * glow_mult)
+        cell_rgba[visited_y, visited_x, 3] = min(1.0, 0.54 * core_mult)
         glow_cells.set_data(glow_rgba)
         lit_cells.set_data(cell_rgba)
 
-        head.center = (hx, hy)
-        read_beam.set_xy((hx - 0.20, hy - 0.55))
-        body.set_xy((hx - 0.38, hy + 0.22))
+        # The machine surfaces from the seed, writes, then dissolves into what
+        # it made.
+        place_head(hx, hy)
+        head_in = ramp(t, emerge_t * 0.45, emerge_t * 0.95)
+        head_out = 1.0 - ramp(t, t_fill_end - 0.7, t_fill_end)
+        head_alpha = min(head_in, head_out)
+        
 
         qi, qj, write = state_for_step(step)
-        local_rule.set_text(visible_rule(step, move))
-        state_box.set_text(f"{qi} → {qj}   write {write}")
+        
 
-        view_transition = easing(max(0.0, min(1.0, (progress - 0.16) / 0.58)))
-        view_center_x = (VISUAL_SIZE - 1) / 2
-        view_center_y = (VISUAL_SIZE - 1) / 2
-        half = interpolate(3.2, VISUAL_SIZE * 0.82, view_transition)
-        cx = interpolate(hx, view_center_x, view_transition)
-        cy = interpolate(hy, view_center_y, view_transition)
-        ax.set_xlim(cx - half, cx + half)
-        ax.set_ylim(cy - half * 9 / 16, cy + half * 9 / 16)
+        cx, cy, half_x, half_y = camera(frame, hx, hy)
+        ax.set_xlim(cx - half_x, cx + half_x)
+        ax.set_ylim(cy - half_y, cy + half_y)
 
-        final_stage_start = (STAGE_COUNT - 1) / STAGE_COUNT
-        if progress > 0.75:
-            title.set_alpha(max(0.0, 1.0 - (progress - 0.75) / 0.10))
-        if progress > final_stage_start:
-            a = min(1.0, (progress - final_stage_start) / 0.08)
-            caption1.set_text("Love is found in the simple act of being.")
-            caption2.set_text("Beauty, in simplicity becoming.")
-            caption1.set_alpha(a)
-            caption2.set_alpha(a)
-        else:
-            caption1.set_alpha(0.0)
-            caption2.set_alpha(0.0)
-        table_start = final_stage_start + 0.10
-        if progress > table_start:
-            table_title.set_text("finite symbolic rule table")
-            table.set_text("\n".join(rule_table_lines()))
-            table_title.set_alpha(min(1.0, (progress - table_start) / 0.06))
-            table.set_alpha(min(1.0, (progress - table_start) / 0.06))
-        else:
-            table_title.set_alpha(0.0)
-            table.set_alpha(0.0)
+        # Title carries the reveal: in as the red clears, out as the fill begins.
+        title.set_alpha(min(ramp(t, t_emerge_end, t_emerge_end + 0.4),
+                            1.0 - ramp(t, t_out_end - outline_t * 0.3, t_out_end + fill_t * 0.12)))
 
-        note.set_alpha(max(0.18, 1.0 - progress * 1.15))
-        return (glow_cells, lit_cells, head, read_beam, body, local_rule, state_box, note, caption1, caption2, table_title, table)
+        # Live machine readout during outline + fill; clears for the final hold.
+        machine_alpha = 1.0 - ramp(t, t_fill_end, t_fill_end + 0.4)
+        # Rule table fades in over the fill and holds, then clears for the dive.
+        table_alpha = min(ramp(t, t_out_end + 0.2, t_out_end + 0.9),
+                          1.0 - ramp(t, t_hold_end, t_hold_end + collapse_t * 0.5))
+        # Captions arrive as the heart completes, hold through the pause, then
+        # clear as the frame dives back into the red.
+        cap_alpha = min(ramp(t, t_fill_end - 0.8, t_fill_end + 0.2),
+                        1.0 - ramp(t, t_hold_end, t_hold_end + collapse_t * 0.5))
+        caption1.set_text("Love is found in the simple act of being.")
+        caption2.set_text("Beauty, in simplicity becoming.")
+        caption1.set_alpha(cap_alpha)
+        caption2.set_alpha(cap_alpha)
+
+        # The loop seam: opaque red at the first and last frames only, so the
+        # end (diving into the heart's core) and the start (the lone red seed)
+        # are one uniform field.  The output becomes the next initialization.
+        seam_alpha = max(1.0 - ramp(t, 0.0, emerge_t * 0.6),
+                         ramp(t, t_hold_end + collapse_t * 0.4, t_hold_end + collapse_t * 0.9))
+        red_seam.set_alpha(seam_alpha)
+
+        return (glow_cells, lit_cells, halo, nib_glow, neck, housing, nib,
+                lamp_a, lamp_b,
+                caption1, caption2, red_seam)
 
     anim = animation.FuncAnimation(fig, update, frames=total_frames, interval=1000 / fps, blit=False)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -469,7 +633,7 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render 'A Turing Machine', a heart-tracing animation.")
-    parser.add_argument("--output", type=Path, default=Path("a_turing_machine.mp4"), help="Output .mp4 or .gif path")
+    parser.add_argument("--output", type=Path, default=Path("a_turing_machine.gif"), help="Output .mp4 or .gif path")
     parser.add_argument("--fps", type=int, default=30, help="Frames per second")
     parser.add_argument("--seconds", type=float, default=DEFAULT_SECONDS, help="Animation duration")
     parser.add_argument("--self-test", action="store_true", help="Validate the heart traversal and exit")
