@@ -42,7 +42,7 @@ OUTLINE_SECONDS = 5         # tracing the remainder of the outline
 FILL_SECONDS = 5            # filling the interior
 HOLD_SECONDS = 3.0            # resting on the completed heart
 COLLAPSE_SECONDS = 3       # diving into a central red cell, back to red
-CAPTION1_FADE_SECONDS = 2   # how slowly the first caption fades (larger = slower)
+CAPTION_FADE_SECONDS = 2    # how slowly captions crossfade (larger = slower)
 DEFAULT_SECONDS = (
     EMERGE_SECONDS + STEP_HOLD_SECONDS * STEP_HOLD_COUNT + OUTLINE_SECONDS
     + FILL_SECONDS + HOLD_SECONDS + COLLAPSE_SECONDS
@@ -390,7 +390,7 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
     fill_t = FILL_SECONDS * scale
     hold_t = HOLD_SECONDS * scale
     collapse_t = COLLAPSE_SECONDS * scale
-    caption1_fade = CAPTION1_FADE_SECONDS * scale
+    caption_fade = CAPTION_FADE_SECONDS * scale
     outline_t = deliberate_t + outline_trace_t
 
     t_emerge_end = emerge_t
@@ -490,8 +490,12 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
             artist.set_alpha(base * a)
 
     title = fig.text(0.5, 0.94, "Eyes of the beholder", color=WHITE, fontsize=28, fontweight="light", ha="center", family="DejaVu Sans")
-    caption1 = fig.text(0.5, 0.135, "", color=SILVER, fontsize=26, ha="center", family="DejaVu Sans")
-    caption2 = fig.text(0.5, 0.085, "", color=GOLD, fontsize=23, ha="center", family="DejaVu Sans")
+    caption1 = fig.text(
+        0.5, 0.5, "", color=SILVER, fontsize=26, ha="center", va="center", family="DejaVu Sans"
+    )
+    caption2 = fig.text(
+        0.5, 0.5, "", color=GOLD, fontsize=23, ha="center", va="center", family="DejaVu Sans"
+    )
 
     # A full-figure red layer.  It is opaque only at the very first and very
     # last frames, so the film begins and ends on the same uniform red field --
@@ -601,14 +605,22 @@ def render_animation(output: Path, fps: int = 30, seconds: float = DEFAULT_SECON
         # Rule table fades in over the fill and holds, then clears for the dive.
         table_alpha = min(ramp(t, t_out_end + 0.2, t_out_end + 0.9),
                           1.0 - ramp(t, t_hold_end, t_hold_end + collapse_t * 0.5))
-        # Captions arrive as the heart completes, hold through the pause, then
-        # clear as the frame dives back into the red.
-        cap_alpha = min(ramp(t, t_fill_end - 0.8, t_fill_end + 0.2),
-                        1.0 - ramp(t, t_hold_end, t_hold_end + collapse_t * 0.5))
+        # Caption timing follows the story beats: the first appears only after
+        # the deliberately slow opening steps finish, then it slowly crossfades
+        # into the second just before the fill begins after the outline trace.
+        bridge_start = max(t_deliberate_end, t_out_end - caption_fade)
+        caption1_alpha = min(
+            ramp(t, t_deliberate_end, t_deliberate_end + caption_fade),
+            1.0 - ramp(t, bridge_start, t_out_end),
+        )
+        caption2_alpha = min(
+            ramp(t, bridge_start, t_out_end),
+            1.0 - ramp(t, t_hold_end, t_hold_end + collapse_t * 0.5),
+        )
         caption1.set_text("Love is found in the simple act of being.")
         caption2.set_text("Beauty, in simplicity becoming.")
-        caption1.set_alpha(cap_alpha)
-        caption2.set_alpha(cap_alpha)
+        caption1.set_alpha(caption1_alpha)
+        caption2.set_alpha(caption2_alpha)
 
         # The loop seam: opaque red at the first and last frames only, so the
         # end (diving into the heart's core) and the start (the lone red seed)
