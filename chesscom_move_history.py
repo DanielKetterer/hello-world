@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-Export a Chess.com player's complete public move history to one CSV file.
+Export Chess.com move history for games between one player and one opponent.
 
 The program:
 1. Gets every available monthly game archive from the Chess.com PubAPI.
-2. Reads the PGN for every completed game.
-3. Expands each game into one CSV row per half-move (ply).
+2. Keeps only completed games between the selected player and opponent.
+3. Expands each matching game into one CSV row per half-move (ply).
 
 Install:
     python -m pip install requests python-chess
 
 Run:
-    python chesscom_move_history.py USERNAME
+    python chesscom_move_history.py
 
 Examples:
-    python chesscom_move_history.py hikaru
-    python chesscom_move_history.py hikaru --output hikaru_moves.csv
-    python chesscom_move_history.py hikaru --contact you@example.com
+    python chesscom_move_history.py
+    python chesscom_move_history.py --output danielketterer_vs_mirrorwahl_moves.csv
+    python chesscom_move_history.py danielketterer --opponent mirrorwahl --contact you@example.com
 
 Chess.com PubAPI:
     https://api.chess.com/pub/player/{username}/games/archives
@@ -53,6 +53,8 @@ except ImportError as exc:
 API_ROOT = "https://api.chess.com/pub"
 CLOCK_RE = re.compile(r"\[%clk\s+([0-9:.]+)\]")
 EMT_RE = re.compile(r"\[%emt\s+([0-9:.]+)\]")
+DEFAULT_USERNAME = "danielketterer"
+DEFAULT_OPPONENT = "mirrorwahl"
 
 
 CSV_FIELDS = [
@@ -209,6 +211,24 @@ class ChessComClient:
         return data
 
 
+def game_usernames(game_data: dict[str, Any]) -> tuple[str, str]:
+    """Return the white and black usernames from a Chess.com game record."""
+    white_username = str((game_data.get("white") or {}).get("username") or "")
+    black_username = str((game_data.get("black") or {}).get("username") or "")
+    return white_username, black_username
+
+
+def is_game_between_players(
+    game_data: dict[str, Any],
+    username: str,
+    opponent: str,
+) -> bool:
+    """Return whether a game was played by username against opponent."""
+    white_username, black_username = game_usernames(game_data)
+    players = {white_username.casefold(), black_username.casefold()}
+    return {username.casefold(), opponent.casefold()} == players
+
+
 def player_color(game_data: dict[str, Any], username: str) -> str:
     target = username.casefold()
     white = str((game_data.get("white") or {}).get("username", "")).casefold()
@@ -259,16 +279,9 @@ def parse_game_rows(
     game_date = headers.get("UTCDate") or headers.get("Date") or ""
     requested_player_color = player_color(game_data, username)
 
-    white_username = str(
-        (game_data.get("white") or {}).get("username")
-        or headers.get("White")
-        or ""
-    )
-    black_username = str(
-        (game_data.get("black") or {}).get("username")
-        or headers.get("Black")
-        or ""
-    )
+    white_username, black_username = game_usernames(game_data)
+    white_username = white_username or headers.get("White") or ""
+    black_username = black_username or headers.get("Black") or ""
 
     for ply, node in enumerate(parsed.mainline(), start=1):
         move = node.move
@@ -333,9 +346,10 @@ def export_move_history(
     *,
     contact: str | None,
     delay: float,
+    opponent: str = DEFAULT_OPPONENT,
 ) -> tuple[int, int, int]:
     """
-    Download all public completed games and atomically write the move CSV.
+    Download public completed games against opponent and atomically write the move CSV.
 
     Returns:
         (archives_processed, games_processed, move_rows_written)
@@ -399,6 +413,9 @@ def export_move_history(
                     if identity:
                         seen_games.add(identity)
 
+                    if not is_game_between_players(game_data, username, opponent):
+                        continue
+
                     try:
                         game_rows = list(parse_game_rows(game_data, username))
                     except Exception as exc:
@@ -432,11 +449,16 @@ def export_move_history(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Download every public completed Chess.com game for a player and "
-            "write one CSV row per half-move."
+            "Download public completed Chess.com games for a player against "
+            "one opponent and write one CSV row per half-move."
         )
     )
-    parser.add_argument("username", help="Chess.com username")
+    parser.add_argument(
+        "username",
+        nargs="?",
+        default=DEFAULT_USERNAME,
+        help=f"Chess.com username (default: {DEFAULT_USERNAME})",
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -449,6 +471,11 @@ def parse_args() -> argparse.Namespace:
             "Optional email or URL placed in the User-Agent, as recommended "
             "by Chess.com for API clients."
         ),
+    )
+    parser.add_argument(
+        "--opponent",
+        default=DEFAULT_OPPONENT,
+        help=f"Opponent username to include (default: {DEFAULT_OPPONENT})",
     )
     parser.add_argument(
         "--delay",
@@ -468,11 +495,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     username = args.username.strip()
+    opponent = args.opponent.strip()
     if not username:
         print("Username cannot be empty.", file=sys.stderr)
         return 2
+    if not opponent:
+        print("Opponent username cannot be empty.", file=sys.stderr)
+        return 2
 
-    output = args.output or Path(f"{username}_move_history.csv")
+    output = args.output or Path(f"{username}_vs_{opponent}_move_history.csv")
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s: %(message)s",
@@ -484,6 +515,7 @@ def main() -> int:
             output,
             contact=args.contact,
             delay=args.delay,
+            opponent=opponent,
         )
     except KeyboardInterrupt:
         print("\nExport cancelled; no partial CSV was retained.", file=sys.stderr)
@@ -494,7 +526,7 @@ def main() -> int:
 
     print(f"Saved: {output.expanduser().resolve()}")
     print(f"Monthly archives: {archive_count:,}")
-    print(f"Games: {game_count:,}")
+    print(f"Games against {opponent}: {game_count:,}")
     print(f"Move rows (plies): {move_count:,}")
     return 0
 
