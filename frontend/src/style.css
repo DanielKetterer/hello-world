@@ -8,3 +8,9 @@ pre { white-space: pre-wrap; background: #0f172a; border-radius: .5rem; padding:
 .tree { background: #f8fafc; height: 100%; }
 .react-flow__node { white-space: pre-line; border: 1px solid #94a3b8; border-radius: .75rem; padding: .6rem .8rem; background: white; color: #0f172a; min-width: 160px; }
 .react-flow__node.selected-node { border: 3px solid #2563eb; box-shadow: 0 0 0 4px rgba(37,99,235,.15); }
+.evaluation-panel { display: grid; gap: .5rem; background: #0f172a; border-radius: .5rem; padding: 1rem; margin-bottom: 1rem; }
+.evaluation-panel ol { margin: .25rem 0 0 1.25rem; padding: 0; }
+.evaluation-panel li { margin: .35rem 0; }
+.evaluation-panel code { display: block; color: #bae6fd; overflow-wrap: anywhere; }
+.eval-bar { height: 18px; background: #111827; border: 1px solid #475569; border-radius: 999px; overflow: hidden; }
+.eval-bar span { display: block; height: 100%; background: linear-gradient(90deg, #f8fafc, #38bdf8); transition: width .2s ease; }

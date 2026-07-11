@@ -16,7 +16,6 @@ import os
 import sqlite3
 import subprocess
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -96,6 +95,7 @@ CREATE TABLE IF NOT EXISTS position_analysis (
     wdl_loss INTEGER,
     best_move_uci TEXT,
     principal_variation TEXT NOT NULL DEFAULT '[]',
+    multipv_lines TEXT NOT NULL DEFAULT '[]',
     completed_at TEXT NOT NULL,
     UNIQUE(position_id, engine_name, engine_version, network_hash, analysis_settings_hash)
 );
@@ -129,6 +129,15 @@ def connect(db_path: Path = DATABASE) -> Iterable[sqlite3.Connection]:
 def init_db(db_path: Path = DATABASE) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(position_analysis)").fetchall()
+        }
+        if "multipv_lines" not in columns:
+            conn.execute(
+                "ALTER TABLE position_analysis "
+                "ADD COLUMN multipv_lines TEXT NOT NULL DEFAULT '[]'"
+            )
         get_or_create_position(conn, chess.STARTING_FEN)
 
 
@@ -280,6 +289,7 @@ def latest_analysis(conn: sqlite3.Connection, position_id: int) -> dict[str, Any
         return None
     data = dict(row)
     data["principal_variation"] = json.loads(data["principal_variation"] or "[]")
+    data["multipv_lines"] = json.loads(data.get("multipv_lines") or "[]")
     return data
 
 
@@ -307,7 +317,7 @@ def fetch_tree(conn: sqlite3.Connection, position_id: int, depth: int) -> dict[s
     return {"position": position, "children": children}
 
 
-def settings_hash(limit: dict[str, int | None], multipv: int) -> str:
+def settings_hash(limit: dict[str, int | float | None], multipv: int) -> str:
     payload = json.dumps({"limit": limit, "multipv": multipv}, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -323,11 +333,56 @@ def stockfish_version(path: str = STOCKFISH_PATH) -> str:
     return "unknown"
 
 
-def analyze_position(conn: sqlite3.Connection, position_id: int, nodes: int, multipv: int) -> dict[str, Any]:
+def engine_line_to_payload(line: dict[str, Any]) -> dict[str, Any]:
+    """Convert one python-chess analysis line into an API/cache payload."""
+    pov = line["score"].pov(chess.WHITE)
+    mate = pov.mate()
+    pv = [move.uci() for move in line.get("pv", [])]
+    return {
+        "multipv": line.get("multipv", 1),
+        "depth": line.get("depth"),
+        "seldepth": line.get("seldepth"),
+        "nodes": line.get("nodes"),
+        "time_ms": int(float(line.get("time") or 0) * 1000),
+        "score_cp_white": pov.score(mate_score=None) if mate is None else None,
+        "mate_in": abs(mate) if mate is not None else None,
+        "mate_for": (
+            "white"
+            if mate and mate > 0
+            else "black"
+            if mate and mate < 0
+            else None
+        ),
+        "wdl": {
+            "win": pov.wdl().white().wins,
+            "draw": pov.wdl().white().draws,
+            "loss": pov.wdl().white().losses,
+        },
+        "best_move_uci": pv[0] if pv else None,
+        "principal_variation": pv,
+    }
+
+
+def build_limit(nodes: int | None, depth: int | None, time_ms: int | None) -> chess.engine.Limit:
+    return chess.engine.Limit(
+        nodes=nodes,
+        depth=depth,
+        time=(time_ms / 1000) if time_ms is not None else None,
+    )
+
+
+def analyze_position(
+    conn: sqlite3.Connection,
+    position_id: int,
+    nodes: int | None,
+    depth: int | None,
+    time_ms: int | None,
+    multipv: int,
+) -> dict[str, Any]:
     position = fetch_position(conn, position_id)
     fen = position["full_fen"]
     version = stockfish_version()
-    limit_payload = {"nodes": nodes, "depth": None, "time_ms": None}
+    limit_payload = {"nodes": nodes, "depth": depth, "time_ms": time_ms}
     ahash = settings_hash(limit_payload, multipv)
     cached = conn.execute(
         """
@@ -340,28 +395,28 @@ def analyze_position(conn: sqlite3.Connection, position_id: int, nodes: int, mul
     if cached:
         data = dict(cached)
         data["principal_variation"] = json.loads(data["principal_variation"] or "[]")
+        data["multipv_lines"] = json.loads(data.get("multipv_lines") or "[]")
         return data
 
     board = chess.Board(fen)
+    limit = build_limit(nodes, depth, time_ms)
     try:
         with chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH) as engine:
-            result = engine.analyse(board, chess.engine.Limit(nodes=nodes), multipv=multipv)
+            result = engine.analyse(board, limit, multipv=multipv)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=f"Stockfish not found at {STOCKFISH_PATH!r}") from exc
 
-    line = result[0] if isinstance(result, list) else result
-    pov = line["score"].pov(chess.WHITE)
-    mate = pov.mate()
-    score_cp = pov.score(mate_score=None) if mate is None else None
-    pv = [move.uci() for move in line.get("pv", [])]
-    wdl = pov.wdl().white()
+    lines = result if isinstance(result, list) else [result]
+    multipv_lines = [engine_line_to_payload(line) for line in lines]
+    primary = multipv_lines[0]
     cur = conn.execute(
         """
         INSERT INTO position_analysis (
             position_id, engine_name, engine_version, network_hash, analysis_settings_hash,
             depth, seldepth, nodes, time_ms, score_cp_white, mate_in, mate_for,
-            wdl_win, wdl_draw, wdl_loss, best_move_uci, principal_variation, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            wdl_win, wdl_draw, wdl_loss, best_move_uci, principal_variation,
+            multipv_lines, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             position_id,
@@ -369,24 +424,26 @@ def analyze_position(conn: sqlite3.Connection, position_id: int, nodes: int, mul
             version,
             "default",
             ahash,
-            line.get("depth"),
-            line.get("seldepth"),
-            line.get("nodes"),
-            line.get("time"),
-            score_cp,
-            abs(mate) if mate is not None else None,
-            "white" if mate and mate > 0 else "black" if mate and mate < 0 else None,
-            wdl.wins,
-            wdl.draws,
-            wdl.losses,
-            pv[0] if pv else None,
-            json.dumps(pv),
+            primary["depth"],
+            primary["seldepth"],
+            primary["nodes"],
+            primary["time_ms"],
+            primary["score_cp_white"],
+            primary["mate_in"],
+            primary["mate_for"],
+            primary["wdl"]["win"],
+            primary["wdl"]["draw"],
+            primary["wdl"]["loss"],
+            primary["best_move_uci"],
+            json.dumps(primary["principal_variation"]),
+            json.dumps(multipv_lines),
             utc_now(),
         ),
     )
     saved = conn.execute("SELECT * FROM position_analysis WHERE id = ?", (cur.lastrowid,)).fetchone()
     data = dict(saved)
     data["principal_variation"] = json.loads(data["principal_variation"] or "[]")
+    data["multipv_lines"] = json.loads(data.get("multipv_lines") or "[]")
     return data
 
 
@@ -402,7 +459,9 @@ class VariationRequest(BaseModel):
 
 class AnalysisRequest(BaseModel):
     positionId: int
-    nodeLimit: int = Field(default=500_000, ge=1, le=50_000_000)
+    nodeLimit: int | None = Field(default=500_000, ge=1, le=50_000_000)
+    depth: int | None = Field(default=None, ge=1, le=99)
+    timeMs: int | None = Field(default=None, ge=1, le=600_000)
     multipv: int = Field(default=1, ge=1, le=10)
 
 
@@ -424,6 +483,17 @@ def startup() -> None:
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/engine")
+def engine_status() -> dict[str, str]:
+    version = stockfish_version()
+    return {
+        "engine": ENGINE_NAME,
+        "path": STOCKFISH_PATH,
+        "version": version,
+        "status": "available" if version != "unknown" else "unavailable",
+    }
 
 
 @app.post("/api/import/pgn")
@@ -457,7 +527,16 @@ def create_variation(request: VariationRequest) -> dict[str, Any]:
 @app.post("/api/analysis")
 def analysis(request: AnalysisRequest) -> dict[str, Any]:
     with connect() as conn:
-        return analyze_position(conn, request.positionId, request.nodeLimit, request.multipv)
+        if request.nodeLimit is None and request.depth is None and request.timeMs is None:
+            raise HTTPException(status_code=400, detail="Provide nodeLimit, depth, or timeMs")
+        return analyze_position(
+            conn,
+            request.positionId,
+            request.nodeLimit,
+            request.depth,
+            request.timeMs,
+            request.multipv,
+        )
 
 
 def cli() -> int:

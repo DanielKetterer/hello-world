@@ -6,7 +6,8 @@ import ReactFlow, { Background, Controls, Edge, Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import './style.css';
 
-type Evaluation = { score_cp_white: number | null; mate_in: number | null; mate_for: string | null; depth: number | null; best_move_uci: string | null; principal_variation: string[] };
+type AnalysisLine = { multipv: number; score_cp_white: number | null; mate_in: number | null; mate_for: string | null; depth: number | null; best_move_uci: string | null; principal_variation: string[]; wdl?: { win: number; draw: number; loss: number } };
+type Evaluation = AnalysisLine & { multipv_lines?: AnalysisLine[]; engine_version?: string; nodes?: number | null; time_ms?: number | null };
 type Position = { id: number; full_fen: string; canonical_fen: string; evaluation?: Evaluation | null };
 type MoveEdge = { id: number; parent_position_id: number; child_position_id: number; san: string; uci: string; games_count: number; white_wins: number; draws: number; black_wins: number };
 type TreeChild = { edge: MoveEdge; position: Position; children: TreeChild[] };
@@ -17,11 +18,29 @@ type TreeInstance = { instanceId: string; position: Position; parentInstanceId: 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const START_ID = 1;
 
-function evaluationText(evaluation?: Evaluation | null): string {
+function evaluationText(evaluation?: Pick<AnalysisLine, 'score_cp_white' | 'mate_in' | 'mate_for'> | null): string {
   if (!evaluation) return 'not analyzed';
   if (evaluation.mate_in) return `${evaluation.mate_for === 'white' ? 'M' : '-M'}${evaluation.mate_in}`;
   if (evaluation.score_cp_white == null) return 'n/a';
   return `${evaluation.score_cp_white >= 0 ? '+' : ''}${(evaluation.score_cp_white / 100).toFixed(2)}`;
+}
+
+function evalPercent(evaluation?: Evaluation | null): number {
+  if (!evaluation || evaluation.score_cp_white == null) return 50;
+  return Math.max(0, Math.min(100, 50 + evaluation.score_cp_white / 20));
+}
+
+function EvaluationPanel({ evaluation }: { evaluation?: Evaluation | null }) {
+  const lines = evaluation?.multipv_lines?.length ? evaluation.multipv_lines : evaluation ? [evaluation] : [];
+  return <section className="evaluation-panel">
+    <div className="eval-bar" aria-label="White evaluation bar"><span style={{ width: `${evalPercent(evaluation)}%` }} /></div>
+    <strong>{evaluationText(evaluation)}</strong>
+    {evaluation?.depth ? <span>depth {evaluation.depth}</span> : null}
+    {evaluation?.engine_version ? <span>{evaluation.engine_version}</span> : null}
+    <ol>{lines.map((line, index) => <li key={`${line.multipv || index}-${line.best_move_uci || 'none'}`}>
+      <b>#{line.multipv || index + 1}</b> {evaluationText(line)} <code>{line.principal_variation?.join(' ') || line.best_move_uci || 'no PV'}</code>
+    </li>)}</ol>
+  </section>;
 }
 
 function childInstanceId(parentId: string, edge: MoveEdge): string {
@@ -94,9 +113,20 @@ function App() {
   async function analyzeSelected() {
     if (!selected) return;
     setStatus('Analyzing selected position…');
-    const response = await fetch(`${API}/api/analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ positionId: selected.position.id, nodeLimit: 500000, multipv: 3 }) });
-    setStatus(response.ok ? 'Analysis complete' : `Analysis failed: ${await response.text()}`);
-    await loadTree(selected.position.id);
+    const response = await fetch(`${API}/api/analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ positionId: selected.position.id, nodeLimit: 1000000, multipv: 3 }) });
+    if (!response.ok) {
+      setStatus(`Analysis failed: ${await response.text()}`);
+      return;
+    }
+    const evaluation = await response.json() as Evaluation;
+    setInstances((current) => ({
+      ...current,
+      [selectedId]: {
+        ...current[selectedId],
+        position: { ...current[selectedId].position, evaluation },
+      },
+    }));
+    setStatus('Analysis complete');
   }
 
   return <main>
@@ -105,7 +135,8 @@ function App() {
       <aside>
         <Chessboard position={selected?.position.full_fen || 'start'} onPieceDrop={onPieceDrop} boardWidth={420} />
         <button onClick={analyzeSelected} disabled={!selected}>Analyze selected node</button>
-        <pre>{selected ? `${selected.incomingEdge?.san || 'Start'}\n${selected.position.full_fen}\nEval: ${evaluationText(selected.position.evaluation)}\nPV: ${selected.position.evaluation?.principal_variation?.join(' ') || ''}` : 'No position selected'}</pre>
+        <EvaluationPanel evaluation={selected?.position.evaluation} />
+        <pre>{selected ? `${selected.incomingEdge?.san || 'Start'}\n${selected.position.full_fen}` : 'No position selected'}</pre>
       </aside>
       <div className="tree"><ReactFlow nodes={flow.nodes} edges={flow.edges} onNodeClick={(_, node) => setSelectedId(node.id)} fitView><Background /><Controls /></ReactFlow></div>
     </section>

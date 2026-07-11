@@ -21,8 +21,11 @@ creates or selects a variation through the backend.
 The backend exposes `/api/analysis` for the currently selected position. It uses
 `python-chess` to run a native UCI Stockfish process, stores the result in the
 `position_analysis` table, and returns centipawn or mate scores from White's
-point of view with the principal variation. Cached analysis is keyed by position,
-engine identity, settings, and MultiPV value.
+point of view with the principal variation. The request can use node, depth, or
+time limits and can ask for MultiPV lines. Cached analysis is keyed by position,
+engine identity, settings, and MultiPV value. The frontend displays the returned
+evaluation bar, depth, engine version, and candidate principal variations beside
+the board.
 
 ## Setup
 
@@ -51,7 +54,8 @@ STOCKFISH_PATH=/path/to/stockfish uvicorn opening_explorer:app --reload
 - `POST /api/import/pgn` imports PGN text into the position graph.
 - `GET /api/tree/{position_id}?depth=2` returns a tree projection for the UI.
 - `POST /api/variations` validates and adds a manual board move.
-- `POST /api/analysis` analyzes a selected position with Stockfish.
+- `GET /api/engine` reports whether the configured Stockfish binary is available.
+- `POST /api/analysis` analyzes a selected position with Stockfish. It accepts `nodeLimit`, `depth`, `timeMs`, and `multipv`.
 
 The older `chesscom_move_history.py` exporter remains available for downloading
 opponent-filtered Chess.com move histories that can be converted into PGN import
